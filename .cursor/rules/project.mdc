@@ -15,18 +15,14 @@ it had no Rust toolchain and no network access. Treat those crates as "probably 
 unproven" and get them under `cargo build` / `cargo test` immediately, before writing new code on
 top of them.
 
-Known gaps, already flagged in code comments — fix these, don't rediscover them:
-- `rpc_client.rs`: raw RPC response shapes are written from memory of the documented schema, not
-  validated against a live response. First task: hit Helius once, print raw JSON, diff against
-  the `Raw*` structs.
-- `cli/main.rs`: FR-5.1's bounded mpsc channel pipeline (fetch -> parse -> store as three
-  explicit stages) is NOT implemented — what's there is bounded-concurrency fetching only. Build
-  the real 3-stage channel pipeline for the backpressure demo.
-- `cli/main.rs`: `build_and_store_candles` is a stub — needs a
-  `Repository::query_balance_changes_for_range` added to `storage`, then wire
-  `ohlcv::infer_trades` + `ohlcv::build_candles` + `repo.upsert_candles` for real.
-- `storage`: rate limiter and DuckDB Appender code have never run against a real DuckDB file —
-  verify idempotency (`replace_slots_batch` called twice on the same slot) actually holds.
+Known gaps that were already closed (do not re-implement):
+- `getBlock` fixture + live `#[ignore]` tests exist in `ingest-core`.
+- FR-5.1 bounded fetch→parse→store mpsc pipeline is in `cli/main.rs`.
+- `build_and_store_candles` + `query_balance_changes_for_range` are wired.
+- FR-4.5: `ingest --serve` shares the DuckDB mutex with the API in one process.
+- FR-5.2: parse/DB work uses `spawn_blocking` unless `--cpu-inline`.
+
+How to test every FR: `HOW_TO_TEST.md`.
 
 ## Objective
 Build one Rust binary that ingests 1,000 consecutive recent Solana slots, reconstructs a

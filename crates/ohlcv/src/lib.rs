@@ -259,6 +259,22 @@ mod tests {
     }
 
     #[test]
+    fn five_minute_candles_use_300s_buckets() {
+        let mint = "TOKENMINT".to_string();
+        let trades = vec![
+            InferredTrade { signature: "s1".into(), block_time: 100, mint: mint.clone(), price_in_sol: 1.0, volume_sol: 1.0 },
+            InferredTrade { signature: "s2".into(), block_time: 400, mint: mint.clone(), price_in_sol: 2.0, volume_sol: 1.0 },
+        ];
+        let candles = build_candles(&trades, 300);
+        let c = &candles[&mint];
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[0].bucket_start, 0);
+        assert_eq!(c[1].bucket_start, 300);
+        assert!(approx(c[0].open, 1.0));
+        assert!(approx(c[1].open, 2.0));
+    }
+
+    #[test]
     fn empty_trades_produce_no_candles() {
         let candles = build_candles(&[], 60);
         assert!(candles.is_empty());

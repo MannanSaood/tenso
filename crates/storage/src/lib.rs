@@ -13,7 +13,8 @@ pub mod repository;
 pub mod schema;
 
 pub use repository::{
-    AccountLockRow, Repository, SlotBatchRow, TokenBalanceRow, TransactionRow,
+    AccountLockRow, BalanceChangeRow, ContentionSummary, DbStats, Repository, SlotBatchRow,
+    TokenBalanceRow, TransactionRow,
 };
 pub use schema::run_migrations;
 
@@ -35,6 +36,13 @@ pub enum StorageError {
 /// access from multiple tasks without external synchronization.
 pub fn open(path: &str) -> Result<Connection, StorageError> {
     let conn = Connection::open(path)?;
+    run_migrations(&conn)?;
+    Ok(conn)
+}
+
+/// In-memory DuckDB for tests. Same schema as [`open`].
+pub fn open_in_memory() -> Result<Connection, StorageError> {
+    let conn = Connection::open_in_memory()?;
     run_migrations(&conn)?;
     Ok(conn)
 }

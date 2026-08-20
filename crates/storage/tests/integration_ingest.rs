@@ -106,6 +106,155 @@ fn failed_batch_rolls_back_so_the_connection_can_write_again() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[test]
+fn query_balance_changes_for_range_is_inclusive_and_excludes_other_slots() {
+    let path = temp_db_path("bal_range");
+    let path_str = path.to_str().unwrap();
+    let conn = storage::open(path_str).expect("open");
+    let mut repo = storage::Repository::new(&conn);
+
+    let mint = "TOKENMINT".to_string();
+    repo.replace_slots_batch(vec![
+        (
+            10,
+            Some(1_000),
+            vec![("sig-a".into(), false, vec![], None)],
+            vec![],
+            vec![("sig-a".into(), mint.clone(), 100, 0, 6)],
+        ),
+        (
+            20,
+            Some(2_000),
+            vec![("sig-b".into(), false, vec![], None)],
+            vec![],
+            vec![("sig-b".into(), mint, 0, 50, 6)],
+        ),
+    ])
+    .expect("insert two slots");
+
+    let rows = repo.query_balance_changes_for_range(10, 10).expect("query");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, "sig-a");
+    assert_eq!(rows[0].1, 10);
+    assert_eq!(rows[0].2, Some(1_000));
+
+    let both = repo.query_balance_changes_for_range(10, 20).expect("query both");
+    assert_eq!(both.len(), 2);
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn replacing_the_same_slot_twice_does_not_duplicate_rows() {
+    let conn = storage::open_in_memory().expect("open");
+    let mut repo = storage::Repository::new(&conn);
+    let row = || {
+        (
+            42u64,
+            Some(1_000i64),
+            vec![("sig-1".into(), false, vec!["prog".into()], None)],
+            vec![("sig-1".into(), "acct".into(), true)],
+            vec![("sig-1".into(), "MINT".into(), 10, 0, 6)],
+        )
+    };
+    repo.replace_slots_batch(vec![row()]).expect("first");
+    repo.replace_slots_batch(vec![row()]).expect("second");
+
+    let txs: i64 = conn
+        .query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0))
+        .unwrap();
+    let locks: i64 = conn
+        .query_row("SELECT COUNT(*) FROM account_locks", [], |r| r.get(0))
+        .unwrap();
+    let bals: i64 = conn
+        .query_row("SELECT COUNT(*) FROM token_balance_changes", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(txs, 1);
+    assert_eq!(locks, 1);
+    assert_eq!(bals, 1);
+}
+
+#[test]
+fn contention_summary_reports_depth_and_writable_accounts() {
+    let conn = storage::open_in_memory().expect("open");
+    let mut repo = storage::Repository::new(&conn);
+    repo.replace_slots_batch(vec![(
+        7,
+        Some(1),
+        vec![
+            ("t1".into(), false, vec![], None),
+            ("t2".into(), false, vec![], None),
+        ],
+        vec![
+            ("t1".into(), "hot".into(), true),
+            ("t2".into(), "hot".into(), true),
+        ],
+        vec![],
+    )])
+    .expect("insert");
+    repo.write_schedule_steps(
+        &["t1".into(), "t2".into()],
+        &contention::ScheduleResult {
+            steps: vec![0, 1],
+            depth: 2,
+            width_per_step: Default::default(),
+            conflicts: vec![],
+        },
+    )
+    .expect("steps");
+
+    let summary = repo.query_contention_summary(7, 7).expect("query");
+    assert_eq!(summary.depth, 2);
+    assert_eq!(summary.top_conflicting_accounts[0], ("hot".into(), 2));
+}
+
+#[test]
+fn stored_swap_rebuilds_into_ohlcv_candles() {
+    let conn = storage::open_in_memory().expect("open");
+    let mut repo = storage::Repository::new(&conn);
+    let mint = "TOKENMINT".to_string();
+    let t = 1_700_000_060i64;
+    repo.replace_slots_batch(vec![(
+        9,
+        Some(t),
+        vec![("swap".into(), false, vec![], None)],
+        vec![],
+        vec![
+            ("swap".into(), mint.clone(), 100_000_000, 0, 6),
+            ("swap".into(), ohlcv::WSOL_MINT.into(), 0, 1_000_000_000, 9),
+        ],
+    )])
+    .expect("insert swap");
+
+    let rows = repo.query_balance_changes_for_range(9, 9).expect("rows");
+    let mut by_sig: std::collections::HashMap<String, ohlcv::TxSnapshot> =
+        std::collections::HashMap::new();
+    for (signature, _slot, block_time, mint, pre_amount, post_amount, decimals) in rows {
+        let tx = by_sig.entry(signature.clone()).or_insert_with(|| ohlcv::TxSnapshot {
+            signature,
+            block_time: block_time.expect("time"),
+            token_deltas: Vec::new(),
+        });
+        tx.token_deltas.push(ohlcv::TokenDelta {
+            mint,
+            pre_amount,
+            post_amount,
+            decimals,
+        });
+    }
+    let mut trades = Vec::new();
+    for tx in by_sig.values() {
+        trades.extend(ohlcv::infer_trades(tx));
+    }
+    assert_eq!(trades.len(), 1);
+    let candles = ohlcv::build_candles(&trades, 60);
+    let series = &candles[&mint];
+    repo.upsert_candles(&mint, 60, series).expect("upsert");
+    let stored = repo.query_ohlcv(&mint, 60).expect("ohlcv");
+    assert_eq!(stored.len(), 1);
+    assert!((stored[0].volume - 1.0).abs() < 1e-9);
+}
+
 // TODO once network access is available in the dev environment:
 //
 // #[tokio::test]

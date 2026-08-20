@@ -132,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn full_resolution_appends_alt_accounts_writable_then_readonly() {
+    fn v0_account_resolution_concatenates_alt_loaded_addresses() {
         let static_keys = keys(&["Payer", "ProgramA"]);
         let header = MessageHeader {
             num_required_signatures: 1,

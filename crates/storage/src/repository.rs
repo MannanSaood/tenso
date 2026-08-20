@@ -32,6 +32,16 @@ pub type SlotBatchRow = (
     Vec<AccountLockRow>,
     Vec<TokenBalanceRow>,
 );
+/// One `token_balance_changes` row. CLI maps these into `ohlcv::TxSnapshot`.
+pub type BalanceChangeRow = (
+    String,      // tx_signature
+    u64,         // slot
+    Option<i64>, // block_time
+    String,      // mint
+    u64,         // pre_amount
+    u64,         // post_amount
+    u8,          // decimals
+);
 
 pub struct Repository<'a> {
     conn: &'a Connection,
@@ -239,6 +249,34 @@ impl<'a> Repository<'a> {
         Ok(rows)
     }
 
+    /// Inclusive slot range. Callers (CLI) group by signature into snapshots.
+    pub fn query_balance_changes_for_range(
+        &self,
+        from_slot: u64,
+        to_slot: u64,
+    ) -> Result<Vec<BalanceChangeRow>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT tx_signature, slot, block_time, mint, pre_amount, post_amount, decimals
+             FROM token_balance_changes
+             WHERE slot BETWEEN ? AND ?
+             ORDER BY slot ASC, tx_signature ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![from_slot as i64, to_slot as i64], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)? as u64,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)? as u64,
+                    row.get::<_, i64>(5)? as u64,
+                    row.get::<_, i32>(6)? as u8,
+                ))
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
     /// Candle series for one mint+interval (GET /api/ohlcv).
     pub fn query_ohlcv(&self, mint: &str, interval_sec: i32) -> Result<Vec<Candle>, StorageError> {
         let mut stmt = self.conn.prepare(
@@ -260,6 +298,57 @@ impl<'a> Repository<'a> {
             })?
             .collect::<Result<_, _>>()?;
         Ok(rows)
+    }
+
+    /// Counts used by `stats` / FINDINGS (coverage, throughput denominators).
+    pub fn query_db_stats(&self) -> Result<DbStats, StorageError> {
+        let blocks: i64 = self.conn.query_row("SELECT COUNT(*) FROM blocks", [], |r| r.get(0))?;
+        let transactions: i64 =
+            self.conn.query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0))?;
+        let failed_transactions: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM transactions WHERE failed = true",
+            [],
+            |r| r.get(0),
+        )?;
+        let token_change_rows: i64 =
+            self.conn.query_row("SELECT COUNT(*) FROM token_balance_changes", [], |r| r.get(0))?;
+        let distinct_mints: i64 = self.conn.query_row(
+            "SELECT COUNT(DISTINCT mint) FROM token_balance_changes",
+            [],
+            |r| r.get(0),
+        )?;
+        let distinct_tx_with_balances: i64 = self.conn.query_row(
+            "SELECT COUNT(DISTINCT tx_signature) FROM token_balance_changes",
+            [],
+            |r| r.get(0),
+        )?;
+        let tx_with_wsol: i64 = self.conn.query_row(
+            "SELECT COUNT(DISTINCT tx_signature) FROM token_balance_changes
+             WHERE mint = 'So11111111111111111111111111111111111111112'",
+            [],
+            |r| r.get(0),
+        )?;
+        let candles_1m: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM candles WHERE interval_sec = 60",
+            [],
+            |r| r.get(0),
+        )?;
+        let candles_5m: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM candles WHERE interval_sec = 300",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(DbStats {
+            blocks,
+            transactions,
+            failed_transactions,
+            token_change_rows,
+            distinct_mints,
+            distinct_tx_with_balances,
+            tx_with_wsol,
+            candles_1m,
+            candles_5m,
+        })
     }
 }
 
@@ -296,4 +385,17 @@ fn coalesce_token_balance_rows(rows: &[TokenBalanceRow]) -> Vec<TokenBalanceRow>
 pub struct ContentionSummary {
     pub depth: u64,
     pub top_conflicting_accounts: Vec<(String, i64)>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DbStats {
+    pub blocks: i64,
+    pub transactions: i64,
+    pub failed_transactions: i64,
+    pub token_change_rows: i64,
+    pub distinct_mints: i64,
+    pub distinct_tx_with_balances: i64,
+    pub tx_with_wsol: i64,
+    pub candles_1m: i64,
+    pub candles_5m: i64,
 }

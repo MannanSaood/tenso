@@ -69,3 +69,27 @@ impl Clone for TokenBucketLimiter {
         Self { inner: self.inner.clone(), capacity: self.capacity, refill_per_sec: self.refill_per_sec }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn token_bucket_enforces_sustained_rate() {
+        // Burst of 1: first acquire is instant; the next two wait ~200ms each at 5/s.
+        let limiter = TokenBucketLimiter::new(5.0, 1.0);
+        let start = Instant::now();
+        for _ in 0..3 {
+            limiter.acquire().await;
+        }
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(300),
+            "expected rate limit to delay, got {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "rate limiter slept too long: {elapsed:?}"
+        );
+    }
+}

@@ -91,3 +91,24 @@ async fn fetch_one(
         Err(e) => FetchOutcome::Failed { slot, error: e.to_string() },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rate_limiter::TokenBucketLimiter;
+    use crate::rpc_client::RpcClient;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn empty_slot_range_completes_without_rpc() {
+        let client = Arc::new(RpcClient::new("http://127.0.0.1:9"));
+        let limiter = Arc::new(TokenBucketLimiter::new(10.0, 10.0));
+        let mut seen = 0u64;
+        fetch_block_range(client, limiter, 1, 0, 4, |_outcome| {
+            seen += 1;
+            async {}
+        })
+        .await;
+        assert_eq!(seen, 0);
+    }
+}

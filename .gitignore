@@ -3,3 +3,4 @@
 *.duckdb.wal
 .DS_Store
 .env
+/logs/

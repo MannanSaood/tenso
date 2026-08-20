@@ -14,3 +14,7 @@ mime_guess = "2"
 duckdb = { version = "1", features = ["bundled"] }
 storage = { path = "../storage" }
 ohlcv = { path = "../ohlcv" }
+
+[dev-dependencies]
+tower = { version = "0.4", features = ["util"] }
+contention = { path = "../contention" }

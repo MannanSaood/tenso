@@ -62,3 +62,59 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    #[tokio::test]
+    async fn retries_transient_errors_then_succeeds() {
+        let attempts = AtomicU32::new(0);
+        let cfg = RetryConfig {
+            max_retries: 3,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(5),
+            jitter_factor: 0.0,
+        };
+        let out = retry_with_backoff(
+            cfg,
+            || {
+                let n = attempts.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if n < 2 {
+                        Err("transient")
+                    } else {
+                        Ok(7u8)
+                    }
+                }
+            },
+            |_| true,
+        )
+        .await;
+        assert_eq!(out, Ok(7));
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn does_not_retry_terminal_errors() {
+        let attempts = AtomicU32::new(0);
+        let cfg = RetryConfig {
+            max_retries: 5,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(5),
+            jitter_factor: 0.0,
+        };
+        let out: Result<(), &str> = retry_with_backoff(
+            cfg,
+            || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                async { Err("terminal") }
+            },
+            |_| false,
+        )
+        .await;
+        assert_eq!(out, Err("terminal"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+}
