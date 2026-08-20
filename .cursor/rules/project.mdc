@@ -1,0 +1,83 @@
+---
+description: Astralane Rust + Solana engineering assignment — architecture, requirements, and conventions
+globs: ["**/*.rs", "**/*.toml", "**/*.html", "**/*.js"]
+alwaysApply: true
+---
+
+# Astralane Rust + Solana Assignment — Project Rules
+
+## Current state (read this first)
+`contention`, `ohlcv`, and `dashboard.js`'s `computeCandleLayout` have been written AND verified
+against reference test suites (Python simulations for the Rust crates, real Node execution for
+the JS). Everything else — `ingest-core`, `storage`, `api`, `cli`, integration tests — is a
+carefully-reasoned first draft that has NEVER been compiled, because the environment that wrote
+it had no Rust toolchain and no network access. Treat those crates as "probably right, definitely
+unproven" and get them under `cargo build` / `cargo test` immediately, before writing new code on
+top of them.
+
+Known gaps, already flagged in code comments — fix these, don't rediscover them:
+- `rpc_client.rs`: raw RPC response shapes are written from memory of the documented schema, not
+  validated against a live response. First task: hit Helius once, print raw JSON, diff against
+  the `Raw*` structs.
+- `cli/main.rs`: FR-5.1's bounded mpsc channel pipeline (fetch -> parse -> store as three
+  explicit stages) is NOT implemented — what's there is bounded-concurrency fetching only. Build
+  the real 3-stage channel pipeline for the backpressure demo.
+- `cli/main.rs`: `build_and_store_candles` is a stub — needs a
+  `Repository::query_balance_changes_for_range` added to `storage`, then wire
+  `ohlcv::infer_trades` + `ohlcv::build_candles` + `repo.upsert_candles` for real.
+- `storage`: rate limiter and DuckDB Appender code have never run against a real DuckDB file —
+  verify idempotency (`replace_slots_batch` called twice on the same slot) actually holds.
+
+## Objective
+Build one Rust binary that ingests 1,000 consecutive recent Solana slots, reconstructs a
+transaction-conflict schedule per block, derives OHLCV candles from balance-change data, and
+serves both over an HTTP API + vanilla-JS dashboard — from a single process, with measured
+backpressure, async-starvation, and write-contention behavior documented in FINDINGS.md.
+
+## Tech Stack
+- Rust 2024 edition (requires rustc 1.85+), tokio async runtime
+- axum for the HTTP API
+- duckdb crate for storage, using the Appender API for batch writes (never row-by-row insert)
+- reqwest for Solana JSON-RPC calls
+- clap (derive) for the CLI
+- rust-embed for serving the static dashboard from the binary
+- thiserror in library crates; anyhow only in the cli binary crate
+
+## Storage Decision: DuckDB
+Chosen over SQLite because Parts 2 (contention) and 3 (OHLCV) are OLAP-shaped. DuckDB's known
+weakness (no true multi-process concurrent writers) is irrelevant here because ingestion and the
+API server run as tokio tasks inside ONE process. Idempotency is implemented as delete-then-insert
+per slot inside a DuckDB transaction, NOT per-row ON CONFLICT via the Appender API (Appender
+doesn't support conflict resolution) — see `storage/src/repository.rs` doc comments.
+
+## Repository Structure
+```
+astralane-assignment/
+├── Cargo.toml                  # workspace root (virtual manifest, no [package])
+├── crates/
+│   ├── ingest-core/            # RPC client, rate limiter, retry, ALT resolution — VERIFIED logic, UNCOMPILED I/O code
+│   ├── storage/                # DuckDB schema + repository — UNCOMPILED, has its own tests/ dir
+│   ├── contention/              # pure logic — VERIFIED (9 unit tests, Python-checked before transcription)
+│   ├── ohlcv/                   # pure logic — VERIFIED (11 unit tests, Python-checked before transcription)
+│   ├── api/                     # axum routes + rust-embed — UNCOMPILED
+│   └── cli/                     # thin binary, clap subcommands — UNCOMPILED, has the known TODOs above
+├── static/                      # dashboard: index.html, dashboard.js, styles.css — layout math VERIFIED in Node
+└── crates/storage/tests/        # integration test skeleton, needs real network to actually run
+```
+
+## Non-Negotiable Coding Conventions
+- No unwrap() or expect() outside #[test] blocks or the cli crate's main().
+- thiserror for library-crate error types; anyhow only at the cli binary boundary.
+- Every public function in ingest-core, contention, and ohlcv has at least one unit test.
+- Run `cargo clippy` and fix warnings before considering any task done.
+- contention and ohlcv must stay zero-I/O — do not add database or network imports to them.
+
+## First Session Checklist
+1. `cargo build` at the workspace root — fix whatever doesn't compile (expect some errors; this
+   was hand-written without a compiler checking it).
+2. `cargo test -p contention -p ohlcv` — these should pass immediately since the logic was
+   verified in Python first; if they don't, the transcription (not the algorithm) has a bug.
+3. Get a Helius API key, hit `getBlock` once manually, compare the raw JSON against
+   `ingest-core/src/rpc_client.rs`'s `Raw*` structs, fix mismatches.
+4. Build out the real bounded-channel pipeline in `cli/main.rs` for FR-5.1.
+5. Finish `build_and_store_candles` in `cli/main.rs`.

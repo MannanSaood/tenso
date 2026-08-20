@@ -1,0 +1,105 @@
+:root {
+  --navy: #1b2a4a;
+  --accent: #2e5aac;
+  --green: #2e8b57;
+  --red: #b03a2e;
+  --grey: #5b6472;
+  --bg: #f7f9fc;
+  --border: #c9d3e0;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  margin: 0;
+  background: var(--bg);
+  color: #222;
+}
+
+header {
+  background: var(--navy);
+  color: white;
+  padding: 24px 32px;
+}
+
+header h1 { margin: 0 0 4px 0; font-size: 22px; }
+.subtitle { margin: 0; color: #b8c4dd; font-size: 14px; }
+
+main {
+  max-width: 1000px;
+  margin: 24px auto;
+  padding: 0 20px;
+}
+
+section {
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 24px;
+}
+
+section h2 {
+  margin-top: 0;
+  color: var(--accent);
+  font-size: 17px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+}
+
+.controls {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.controls label {
+  font-size: 13px;
+  color: var(--grey);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+input, select, button {
+  font-size: 13px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+button {
+  background: var(--accent);
+  color: white;
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+}
+button:hover { background: var(--navy); }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+th, td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+th { color: var(--grey); font-weight: 600; background: var(--bg); }
+
+#contention-summary {
+  font-size: 14px;
+  margin-bottom: 14px;
+  color: var(--navy);
+}
+
+canvas {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  max-width: 100%;
+}

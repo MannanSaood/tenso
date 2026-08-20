@@ -1,0 +1,10 @@
+[package]
+name = "contention"
+version = "0.1.0"
+edition = "2024"
+description = "Pure logic: order-preserving heuristic transaction-conflict scheduler. Zero I/O."
+
+[dependencies]
+# Intentionally minimal — this crate must stay dependency-light since it has
+# zero I/O and should compile/test in isolation almost instantly.
+serde = { version = "1", features = ["derive"] }

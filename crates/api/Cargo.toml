@@ -1,0 +1,16 @@
+[package]
+name = "api"
+version = "0.1.0"
+edition = "2024"
+description = "axum HTTP API + static dashboard serving. Handlers are thin — no business logic here."
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rust-embed = "8"
+mime_guess = "2"
+duckdb = { version = "1", features = ["bundled"] }
+storage = { path = "../storage" }
+ohlcv = { path = "../ohlcv" }

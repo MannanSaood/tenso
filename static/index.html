@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Astralane Assignment — Dashboard</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <h1>Solana Block Analysis</h1>
+    <p class="subtitle">Contention scheduling + OHLCV, from raw balance deltas</p>
+  </header>
+
+  <main>
+    <section id="contention-section">
+      <h2>Contention</h2>
+      <div class="controls">
+        <label>From slot <input id="from-slot" type="number" /></label>
+        <label>To slot <input id="to-slot" type="number" /></label>
+        <button id="load-contention">Load</button>
+      </div>
+      <div id="contention-summary"></div>
+      <table id="conflict-table">
+        <thead><tr><th>Account</th><th>Write-lock conflicts</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section id="ohlcv-section">
+      <h2>OHLCV</h2>
+      <div class="controls">
+        <select id="token-select"></select>
+        <select id="interval-select">
+          <option value="1m">1 minute</option>
+          <option value="5m">5 minute</option>
+        </select>
+        <button id="load-ohlcv">Load</button>
+      </div>
+      <canvas id="candle-chart" width="900" height="420"></canvas>
+    </section>
+  </main>
+
+  <script src="dashboard.js"></script>
+</body>
+</html>
