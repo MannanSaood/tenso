@@ -32,6 +32,80 @@ fn schema_migrations_are_idempotent() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[test]
+fn duplicate_mint_rows_in_one_tx_coalesce_instead_of_pk_fail() {
+    let path = temp_db_path("dup_mint");
+    let path_str = path.to_str().unwrap();
+    let conn = storage::open(path_str).expect("open");
+    let mut repo = storage::Repository::new(&conn);
+
+    let sig = "sig-dup-mint".to_string();
+    let usdt = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB".to_string();
+    repo.replace_slots_batch(vec![(
+        1,
+        Some(1),
+        vec![(sig.clone(), false, vec!["prog".into()], None)],
+        vec![],
+        vec![
+            (sig.clone(), usdt.clone(), 10, 20, 6),
+            (sig.clone(), usdt.clone(), 5, 0, 6),
+        ],
+    )])
+    .expect("same mint twice must coalesce");
+
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM token_balance_changes", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 1);
+    let (pre, post): (i64, i64) = conn
+        .query_row(
+            "SELECT pre_amount, post_amount FROM token_balance_changes",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    // net +10 + (-5) = +5
+    assert_eq!(pre, 0);
+    assert_eq!(post, 5);
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn failed_batch_rolls_back_so_the_connection_can_write_again() {
+    let path = temp_db_path("rollback");
+    let path_str = path.to_str().unwrap();
+    let conn = storage::open(path_str).expect("open");
+    let mut repo = storage::Repository::new(&conn);
+
+    let sig = "same-sig".to_string();
+    let first = repo.replace_slots_batch(vec![(
+        1,
+        Some(1),
+        vec![
+            (sig.clone(), false, vec![], None),
+            (sig.clone(), false, vec![], None), // duplicate PK on transactions.signature
+        ],
+        vec![],
+        vec![],
+    )]);
+    assert!(first.is_err(), "duplicate tx signature must fail the batch");
+
+    let second = repo.replace_slots_batch(vec![(
+        1,
+        Some(1),
+        vec![(sig, false, vec![], None)],
+        vec![],
+        vec![],
+    )]);
+    assert!(
+        second.is_ok(),
+        "after ROLLBACK the same connection must accept a valid batch, got {second:?}"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
 // TODO once network access is available in the dev environment:
 //
 // #[tokio::test]

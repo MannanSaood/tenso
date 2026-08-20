@@ -8,6 +8,7 @@ use crate::retry::{retry_with_backoff, RetryConfig};
 use crate::rpc_client::{is_transient, RpcClient, RpcError};
 use crate::types::DecodedBlock;
 use futures::stream::{FuturesUnordered, StreamExt};
+use std::future::Future;
 use std::sync::Arc;
 
 pub enum FetchOutcome {
@@ -26,7 +27,11 @@ pub enum FetchOutcome {
 /// to storage while later slots are still being fetched, which matters for
 /// the backpressure experiment (FR-5.1): the caller's storage-writer stage
 /// is a separate, boundable consumer of this stream.
-pub async fn fetch_block_range<F>(
+///
+/// `on_outcome` is driven to completion before the next slot is dispatched.
+/// That lets a bounded `mpsc::Sender::send().await` in the callback stall
+/// the dispatcher when a downstream stage is paused (block policy).
+pub async fn fetch_block_range<F, Fut>(
     client: Arc<RpcClient>,
     limiter: Arc<TokenBucketLimiter>,
     start_slot: u64,
@@ -34,10 +39,14 @@ pub async fn fetch_block_range<F>(
     max_concurrency: usize,
     mut on_outcome: F,
 ) where
-    F: FnMut(FetchOutcome) + Send,
+    F: FnMut(FetchOutcome) -> Fut + Send,
+    Fut: Future<Output = ()> + Send,
 {
     let retry_config = RetryConfig::default();
-    let mut slots: Vec<u64> = (start_slot..start_slot + count).collect();
+    // Oldest first: `pop()` yields `start_slot`, then start_slot+1, ...
+    // (collecting the range and popping the end would fetch the newest —
+    // and for a tip-relative range, not-yet-produced — slots first.)
+    let mut slots: Vec<u64> = (start_slot..start_slot + count).rev().collect();
     let mut in_flight = FuturesUnordered::new();
 
     // Prime the pipeline up to max_concurrency, then keep it full as tasks
@@ -51,7 +60,7 @@ pub async fn fetch_block_range<F>(
     }
 
     while let Some(outcome) = in_flight.next().await {
-        on_outcome(outcome);
+        on_outcome(outcome).await;
         if let Some(slot) = slots.pop() {
             in_flight.push(fetch_one(client.clone(), limiter.clone(), slot, retry_config));
         }

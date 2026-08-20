@@ -12,7 +12,9 @@
 pub mod repository;
 pub mod schema;
 
-pub use repository::Repository;
+pub use repository::{
+    AccountLockRow, Repository, SlotBatchRow, TokenBalanceRow, TransactionRow,
+};
 pub use schema::run_migrations;
 
 use duckdb::Connection;

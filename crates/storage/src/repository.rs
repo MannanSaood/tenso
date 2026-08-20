@@ -20,6 +20,18 @@ use crate::StorageError;
 use contention::ScheduleResult;
 use duckdb::{params, Connection};
 use ohlcv::Candle;
+use std::collections::HashMap;
+
+pub type TransactionRow = (String, bool, Vec<String>, Option<i32>);
+pub type AccountLockRow = (String, String, bool);
+pub type TokenBalanceRow = (String, String, u64, u64, u8);
+pub type SlotBatchRow = (
+    u64,
+    Option<i64>,
+    Vec<TransactionRow>,
+    Vec<AccountLockRow>,
+    Vec<TokenBalanceRow>,
+);
 
 pub struct Repository<'a> {
     conn: &'a Connection,
@@ -55,14 +67,9 @@ impl<'a> Repository<'a> {
         &self,
         slot: u64,
         block_time: Option<i64>,
-        transactions: &[(
-            String,      // signature
-            bool,        // failed
-            Vec<String>, // program_ids
-            Option<i32>, // step (from contention scheduler, if computed yet)
-        )],
-        locks: &[(String, String, bool)], // (tx_signature, account, is_writable)
-        token_changes: &[(String, String, u64, u64, u8)], // (tx_sig, mint, pre, post, decimals)
+        transactions: &[TransactionRow],
+        locks: &[AccountLockRow],
+        token_changes: &[TokenBalanceRow],
     ) -> Result<(), StorageError> {
         let slot_i = slot as i64;
 
@@ -104,15 +111,15 @@ impl<'a> Repository<'a> {
         }
         {
             let mut appender = self.conn.appender("token_balance_changes")?;
-            for (sig, mint, pre, post, decimals) in token_changes {
+            for (sig, mint, pre, post, decimals) in coalesce_token_balance_rows(token_changes) {
                 appender.append_row(params![
                     sig,
                     slot_i,
                     block_time,
                     mint,
-                    *pre as i64,
-                    *post as i64,
-                    *decimals as i32
+                    pre as i64,
+                    post as i64,
+                    decimals as i32
                 ])?;
             }
             appender.flush()?;
@@ -125,22 +132,28 @@ impl<'a> Repository<'a> {
     /// DuckDB transaction. This is the write-path-contention lever —
     /// tune the batch size the caller uses (e.g. every 20-50 blocks) based
     /// on the FINDINGS.md experiment rather than calling this per-block.
-    pub fn replace_slots_batch(
-        &mut self,
-        slots: Vec<(
-            u64,
-            Option<i64>,
-            Vec<(String, bool, Vec<String>, Option<i32>)>,
-            Vec<(String, String, bool)>,
-            Vec<(String, String, u64, u64, u8)>,
-        )>,
-    ) -> Result<(), StorageError> {
+    pub fn replace_slots_batch(&mut self, slots: Vec<SlotBatchRow>) -> Result<(), StorageError> {
         self.conn.execute_batch("BEGIN TRANSACTION")?;
-        for (slot, block_time, transactions, locks, token_changes) in slots {
-            self.replace_slot_data_inner(slot, block_time, &transactions, &locks, &token_changes)?;
+        let result = (|| {
+            for (slot, block_time, transactions, locks, token_changes) in slots {
+                self.replace_slot_data_inner(
+                    slot,
+                    block_time,
+                    &transactions,
+                    &locks,
+                    &token_changes,
+                )?;
+            }
+            self.conn.execute_batch("COMMIT")?;
+            Ok(())
+        })();
+        if result.is_err() {
+            // Constraint failures abort the DuckDB txn; without ROLLBACK the
+            // next statement on this connection fails with "transaction is
+            // aborted" instead of the original error.
+            let _ = self.conn.execute_batch("ROLLBACK");
         }
-        self.conn.execute_batch("COMMIT")?;
-        Ok(())
+        result
     }
 
     /// Write back schedule step assignments computed by the `contention`
@@ -248,6 +261,35 @@ impl<'a> Repository<'a> {
             .collect::<Result<_, _>>()?;
         Ok(rows)
     }
+}
+
+/// Net multiple token-account deltas for the same (tx, mint) so the
+/// `(tx_signature, mint)` primary key holds. A swap often moves two ATAs of
+/// the same mint; OHLCV only needs the net mint delta.
+fn coalesce_token_balance_rows(rows: &[TokenBalanceRow]) -> Vec<TokenBalanceRow> {
+    let mut net: HashMap<(String, String), (i128, u8)> = HashMap::new();
+    let mut order: Vec<(String, String)> = Vec::new();
+    for (sig, mint, pre, post, decimals) in rows {
+        let key = (sig.clone(), mint.clone());
+        let delta = *post as i128 - *pre as i128;
+        if let Some((n, _)) = net.get_mut(&key) {
+            *n += delta;
+        } else {
+            order.push(key.clone());
+            net.insert(key, (delta, *decimals));
+        }
+    }
+    order
+        .into_iter()
+        .filter_map(|key| {
+            let (n, decimals) = net.get(&key).copied()?;
+            if n == 0 {
+                return None;
+            }
+            let (pre, post) = if n > 0 { (0, n as u64) } else { ((-n) as u64, 0) };
+            Some((key.0, key.1, pre, post, decimals))
+        })
+        .collect()
 }
 
 #[derive(Debug, serde::Serialize)]

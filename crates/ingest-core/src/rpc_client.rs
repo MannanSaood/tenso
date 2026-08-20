@@ -11,6 +11,7 @@ use crate::account_resolution::{resolve_account_locks, MessageHeader};
 use crate::types::{AccountLock, DecodedBlock, DecodedTransaction, TokenBalanceChange};
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::HashMap;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -28,7 +29,14 @@ pub enum RpcError {
 /// Transient errors are worth retrying (network hiccups, rate limit
 /// responses); a skipped slot or a malformed request are not.
 pub fn is_transient(e: &RpcError) -> bool {
-    matches!(e, RpcError::Transport(_))
+    match e {
+        RpcError::Transport(_) => true,
+        RpcError::RpcReturnedError(msg) => {
+            let m = msg.to_ascii_lowercase();
+            m.contains("429") || m.contains("too many") || m.contains("rate limit")
+        }
+        _ => false,
+    }
 }
 
 pub struct RpcClient {
@@ -89,10 +97,11 @@ fn decode_get_block_json(slot: u64, value: serde_json::Value) -> Result<DecodedB
             .and_then(|m| m.as_str())
             .unwrap_or("rpc error")
             .to_string();
-        // Solana RPC signals a skipped slot via a specific error message
-        // ("Slot ... was skipped, or missing due to ledger jump to
-        // recent snapshot"); anything else is a genuine error.
-        if message.contains("skipped") || message.contains("missing") {
+        let code = err.get("code").and_then(|c| c.as_i64());
+        // FR-1.3: leader-skipped / not-yet-available slots are expected.
+        // Helius often says "Block not available for slot N" (-32004) instead
+        // of the documented "Slot N was skipped..." wording.
+        if is_slot_unavailable(&message, code) {
             return Err(RpcError::SlotSkipped);
         }
         return Err(RpcError::RpcReturnedError(message));
@@ -106,6 +115,15 @@ fn decode_get_block_json(slot: u64, value: serde_json::Value) -> Result<DecodedB
     Ok(decode_block(slot, raw))
 }
 
+fn is_slot_unavailable(message: &str, code: Option<i64>) -> bool {
+    // -32004 Block not available; -32007/-32009 skipped or missing in storage.
+    if matches!(code, Some(-32004 | -32007 | -32009)) {
+        return true;
+    }
+    let m = message.to_ascii_lowercase();
+    m.contains("skipped") || m.contains("missing") || m.contains("block not available")
+}
+
 fn get_block_body(slot: u64) -> serde_json::Value {
     json!({
         "jsonrpc": "2.0",
@@ -117,7 +135,8 @@ fn get_block_body(slot: u64) -> serde_json::Value {
                 "encoding": "json",
                 "maxSupportedTransactionVersion": 0,
                 "transactionDetails": "full",
-                "rewards": false
+                "rewards": false,
+                "commitment": "finalized"
             }
         ]
     })
@@ -238,7 +257,36 @@ fn build_token_deltas(
             }
         }
     }
-    deltas
+    // One tx can touch several token accounts of the same mint (e.g. two USDT
+    // ATAs). Storage's PK is (tx_signature, mint), and OHLCV prices from a
+    // net mint delta, so collapse to one row per mint before we leave decode.
+    coalesce_token_deltas(deltas)
+}
+
+/// Net same-mint account deltas into one pre/post pair. Zero-net mints drop.
+fn coalesce_token_deltas(deltas: Vec<TokenBalanceChange>) -> Vec<TokenBalanceChange> {
+    let mut net: HashMap<String, (i128, u8)> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for d in deltas {
+        let delta = d.post_amount as i128 - d.pre_amount as i128;
+        if let Some((n, _)) = net.get_mut(&d.mint) {
+            *n += delta;
+        } else {
+            order.push(d.mint.clone());
+            net.insert(d.mint, (delta, d.decimals));
+        }
+    }
+    order
+        .into_iter()
+        .filter_map(|mint| {
+            let (n, decimals) = net.get(&mint).copied()?;
+            if n == 0 {
+                return None;
+            }
+            let (pre_amount, post_amount) = if n > 0 { (0, n as u64) } else { ((-n) as u64, 0) };
+            Some(TokenBalanceChange { mint, pre_amount, post_amount, decimals })
+        })
+        .collect()
 }
 
 // ---------------- Raw RPC response shapes ----------------
@@ -382,6 +430,95 @@ mod live_debug {
         assert!(block.transactions[1].failed);
         assert!(!block.transactions[2].token_deltas.is_empty());
         assert!(!block.transactions[2].locks.is_empty());
+        let mints: Vec<&str> = block.transactions[2]
+            .token_deltas
+            .iter()
+            .map(|d| d.mint.as_str())
+            .collect();
+        let mut sorted = mints.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(mints.len(), sorted.len(), "decode must emit at most one delta per mint");
+    }
+
+    #[test]
+    fn rate_limit_rpc_errors_are_transient() {
+        assert!(is_transient(&RpcError::RpcReturnedError("429 Too many requests".into())));
+        assert!(!is_transient(&RpcError::RpcReturnedError("Block not available".into())));
+        assert!(!is_transient(&RpcError::SlotSkipped));
+    }
+
+    #[test]
+    fn block_not_available_is_skipped() {
+        let value = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {
+                "code": -32004,
+                "message": "Block not available for slot 440510074"
+            }
+        });
+        let err = decode_get_block_json(440510074, value).unwrap_err();
+        assert!(matches!(err, RpcError::SlotSkipped));
+    }
+
+    #[test]
+    fn skipped_slot_message_is_skipped() {
+        let value = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {
+                "code": -32007,
+                "message": "Slot 123 was skipped, or missing in long-term storage"
+            }
+        });
+        let err = decode_get_block_json(123, value).unwrap_err();
+        assert!(matches!(err, RpcError::SlotSkipped));
+    }
+
+    #[test]
+    fn coalesce_token_deltas_nets_same_mint_accounts() {
+        let usdt = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+        let wsol = "So11111111111111111111111111111111111111112";
+        let out = coalesce_token_deltas(vec![
+            TokenBalanceChange {
+                mint: usdt.into(),
+                pre_amount: 10,
+                post_amount: 20,
+                decimals: 6,
+            },
+            TokenBalanceChange {
+                mint: usdt.into(),
+                pre_amount: 5,
+                post_amount: 0,
+                decimals: 6,
+            },
+            TokenBalanceChange {
+                mint: wsol.into(),
+                pre_amount: 0,
+                post_amount: 100,
+                decimals: 9,
+            },
+        ]);
+        assert_eq!(out.len(), 2);
+        let usdt_row = out.iter().find(|d| d.mint == usdt).expect("usdt");
+        // net +10 + (-5) = +5 → represented as pre=0, post=5
+        assert_eq!(usdt_row.pre_amount, 0);
+        assert_eq!(usdt_row.post_amount, 5);
+        assert_eq!(usdt_row.decimals, 6);
+        let wsol_row = out.iter().find(|d| d.mint == wsol).expect("wsol");
+        assert_eq!(wsol_row.pre_amount, 0);
+        assert_eq!(wsol_row.post_amount, 100);
+    }
+
+    #[test]
+    fn coalesce_token_deltas_drops_zero_net() {
+        let mint = "mint".to_string();
+        let out = coalesce_token_deltas(vec![
+            TokenBalanceChange { mint: mint.clone(), pre_amount: 10, post_amount: 20, decimals: 6 },
+            TokenBalanceChange { mint, pre_amount: 20, post_amount: 10, decimals: 6 },
+        ]);
+        assert!(out.is_empty());
     }
 
     #[tokio::test]
