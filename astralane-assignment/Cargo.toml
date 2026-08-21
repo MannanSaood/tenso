@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ingest-core",
+    "crates/storage",
+    "crates/contention",
+    "crates/ohlcv",
+    "crates/api",
+    "crates/cli",
+]
+
+[workspace.package]
+edition = "2024"
