@@ -17,7 +17,7 @@ run_crate() {
   cargo test -p "$1"
 }
 
-echo "Astralane FR verification (Unix)"
+echo "FR verification (Unix)"
 echo "Repo: $ROOT"
 rustc --version
 

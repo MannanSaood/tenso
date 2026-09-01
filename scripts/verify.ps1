@@ -45,7 +45,7 @@ function Invoke-CrateTest {
     }
 }
 
-Write-Host "Astralane FR verification (Windows)" -ForegroundColor Green
+Write-Host "FR verification (Windows)" -ForegroundColor Green
 Write-Host "Repo: $Root"
 Write-Host "Rustc: $(rustc --version)"
 

@@ -1,8 +1,0 @@
-[package]
-name = "ohlcv"
-version = "0.1.0"
-edition = "2024"
-description = "Pure logic: price inference from balance deltas + OHLCV candle aggregation. Zero I/O."
-
-[dependencies]
-serde = { version = "1", features = ["derive"] }

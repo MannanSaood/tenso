@@ -1,10 +1,10 @@
 ---
-description: Astralane Rust + Solana engineering assignment — architecture, requirements, and conventions
+description: Rust + Solana engineering assignment — architecture, requirements, and conventions
 globs: ["**/*.rs", "**/*.toml", "**/*.html", "**/*.js"]
 alwaysApply: true
 ---
 
-# Astralane Rust + Solana Assignment — Project Rules
+# Rust + Solana Assignment — Project Rules
 
 ## Current state (read this first)
 `contention`, `ohlcv`, and `dashboard.js`'s `computeCandleLayout` have been written AND verified

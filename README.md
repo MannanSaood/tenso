@@ -1,4 +1,4 @@
-# Astralane Rust + Solana Engineering Assignment
+# Rust + Solana Engineering Assignment
 
 Ingest **1,000 consecutive recent Solana slots**, reconstruct a per-block
 transaction-conflict schedule, derive **1-minute and 5-minute** OHLCV
