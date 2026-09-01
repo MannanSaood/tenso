@@ -3,7 +3,7 @@
 param(
     [int64]$StartSlot = 440522383,
     [int64]$Count = 1000,
-    [string]$DbPath = "astralane.duckdb"
+    [string]$DbPath = "blocks.duckdb"
 )
 
 $ErrorActionPreference = "Stop"
@@ -24,7 +24,7 @@ Get-Content $envFile | ForEach-Object {
 if (-not $env:HELIUS_URL) { throw "HELIUS_URL not set in .env" }
 
 $env:RUST_LOG = "info"
-$exe = Join-Path $Root "target\release\astralane-assignment.exe"
+$exe = Join-Path $Root "target\release\block-analysis.exe"
 if (-not (Test-Path $exe)) { throw "missing release exe - cargo build --release -p cli" }
 
 $logDir = Join-Path $Root "logs"

@@ -5,7 +5,7 @@ edition = "2024"
 description = "Thin binary. clap subcommands: ingest, serve. The only crate permitted anyhow/unwrap outside tests."
 
 [[bin]]
-name = "astralane-assignment"
+name = "block-analysis"
 path = "src/main.rs"
 
 [dependencies]

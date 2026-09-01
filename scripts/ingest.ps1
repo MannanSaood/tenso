@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Assignment-sized ingest using PowerShell line continuation (backtick), not bash `\`.
+  Default 1,000-slot ingest using PowerShell line continuation (backtick), not bash `\`.
 
 .EXAMPLE
   powershell -File scripts\ingest.ps1
@@ -13,7 +13,7 @@ param(
     [int]$SimulatePauseSecs = 0,
     [switch]$Serve,
     [uint16]$Port = 8080,
-    [string]$DbPath = "astralane.duckdb"
+    [string]$DbPath = "blocks.duckdb"
 )
 
 $ErrorActionPreference = "Stop"
@@ -34,7 +34,7 @@ if (-not $env:HELIUS_URL) { throw "HELIUS_URL not set in .env" }
 $env:RUST_LOG = "info"
 Write-Host "start_slot=$StartSlot  count=$Count  (range $StartSlot .. $($StartSlot + $Count - 1))"
 
-$exe = Join-Path $Root "target\release\astralane-assignment.exe"
+$exe = Join-Path $Root "target\release\block-analysis.exe"
 if (-not (Test-Path $exe)) {
     cargo build --release -p cli
 }

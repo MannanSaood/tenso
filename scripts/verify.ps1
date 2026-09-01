@@ -83,7 +83,7 @@ if ($LiveSmoke) {
         --rate-per-sec 10 `
         --max-concurrency 2 `
         --batch-size 2 `
-        --db-path astralane-verify.duckdb
+        --db-path blocks-verify.duckdb
     if ($LASTEXITCODE -ne 0) {
         throw "FAILED: live smoke ingest"
     }

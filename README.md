@@ -1,66 +1,71 @@
-# Rust + Solana Engineering Assignment
+# Solana Block Analysis
 
-Ingest **1,000 consecutive recent Solana slots**, reconstruct a per-block
-transaction-conflict schedule, derive **1-minute and 5-minute** OHLCV
-candles from transaction metadata only, and serve both over HTTP + a
-vanilla-JS dashboard from one process.
+Ingest consecutive Solana slots over JSON-RPC, reconstruct a per-block
+transaction-conflict schedule, derive 1-minute and 5-minute OHLCV candles
+from token-balance metadata, and serve both from one process: HTTP API plus
+a vanilla-JS dashboard.
 
-## Setup
+![Contention for slot 440522383](gallery/contention.png)
+![OHLCV 1-minute candles](gallery/ohlcv.png)
 
-Requires **Rust 1.85+** (edition 2024). Clone the repo, then:
+## What it does
+
+- **Ingest** — `getBlock` over Helius (or any JSON-RPC), client-side 10 req/s
+  token bucket, retries, skip-slot handling, v0 / ALT account resolution.
+- **Contention** — order-preserving schedule from account locks (heuristic;
+  RPC does not expose the validator’s real timetable).
+- **OHLCV** — 1m / 5m candles from `preTokenBalances` / `postTokenBalances`
+  only. No DEX instruction decode.
+- **Serve** — axum + DuckDB in one process. `/api/health` does not take the
+  DB mutex. Dashboard is embedded in the binary (`rust-embed`).
+
+Storage is DuckDB (Appender batch writes, delete-then-insert per slot).
+Ingest and the API share one connection behind a mutex.
+
+## Requirements
+
+Rust **1.85+** (edition 2024). RPC URL in a gitignored `.env`:
+
+```
+HELIUS_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_KEY
+```
+
+Copy `.env.example` if needed. Rate limiting is enforced **in this process**
+(`ingest-core::TokenBucketLimiter`), not by relying on the provider.
 
 ```
 cargo build --release
 cargo test
 ```
 
-On Windows, if `cargo test` hits MSVC `LNK1318` (parallel DuckDB links),
-run crates one at a time or `powershell -File scripts\verify.ps1`.
+On Windows, if `cargo test` hits MSVC `LNK1318`, run crates one at a time
+or `powershell -File scripts\verify.ps1`.
 
-RPC URL (gitignored `.env`):
+## Ingest window
 
-```
-HELIUS_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_KEY
-```
-
-The client enforces a **10 req/s token-bucket in our code**
-(`ingest-core::TokenBucketLimiter`), independent of whatever the provider
-would throttle. Do not use public `api.mainnet-beta.solana.com` for timed
-runs — its throttling would contaminate FINDINGS.
-
-## Chosen slot range
+Default range (finalized mainnet, 20 Aug 2026): **1,000 consecutive slots**
+`440522383`–`440523382` (tip `440524383` minus 2,000 so the window stays in
+long-term storage).
 
 | | |
 |---|---|
-| **Start slot** | `440522383` |
-| **End slot (inclusive)** | `440523382` |
-| **Count** | **1,000 consecutive** slots |
-| **Chosen** | 20 Aug 2026, from finalized `getSlot` **440524383**, minus 2,000 |
+| Start | `440522383` |
+| End (inclusive) | `440523382` |
+| Count | 1,000 |
 
-The offset behind the tip keeps the whole window in **finalized /
-long-term storage**, so leader-skipped and “block not available” noise
-at the moving tip does not dominate the run. Re-run:
-
-```powershell
-powershell -File scripts\ingest.ps1
-```
-
-(`scripts\ingest.ps1` defaults `--start-slot` to `440522383` and
-`--count` to `1000`.)
-
-## Run
+## Usage
 
 PowerShell (do **not** use bash `\` line continuation):
 
 ```powershell
-# ingest the chosen 1,000-slot window
+# ingest the default 1,000-slot window (loads .env)
 powershell -File scripts\ingest.ps1
 
-# same window + dashboard in this process (Ctrl+C to stop after ingest)
+# ingest and keep the dashboard up (Ctrl+C to stop)
 powershell -File scripts\ingest.ps1 -Serve
 
-# serve an existing DB
-.\target\release\astralane-assignment.exe serve --db-path astralane.duckdb --port 8080
+# serve an existing database
+.\target\release\block-analysis.exe serve --db-path blocks.duckdb --port 8080
 ```
 
 macOS / Linux:
@@ -73,70 +78,61 @@ cargo run --release -- ingest \
   --rate-per-sec 10 \
   --max-concurrency 8 \
   --batch-size 25 \
-  --db-path astralane.duckdb
+  --db-path blocks.duckdb
 
-cargo run --release -- serve --db-path astralane.duckdb --port 8080
+cargo run --release -- serve --db-path blocks.duckdb --port 8080
 ```
 
-Open http://127.0.0.1:8080 — contention table + 1m/5m candles.
-The token dropdown lists **only mints that have stored candles** (not every
-mint with a balance-change row). Contention defaults to slot `440522383`.
+Open http://127.0.0.1:8080. The token list is **mints that already have
+candles**. Contention defaults to slot `440522383`.
 
-Dashboard from the finished 1,000-slot ingest:
+A full 1,000-slot DuckDB is on the order of **9 GB** and is not checked in.
+Rebuild it with `scripts\ingest.ps1`, or run `cargo test` without RPC.
+Benchmarks: [FINDINGS.md](FINDINGS.md). More commands: [HOW_TO_TEST.md](HOW_TO_TEST.md).
 
-![Contention for slot 440522383](gallery/contention.png)
-![OHLCV 1-minute candles](gallery/ohlcv.png)
+## Architecture
 
-The 9 GB `astralane.duckdb` from the assignment ingest is **not** in the
-submission zip. Replay with `scripts\ingest.ps1`, or `cargo test` for
-offline proof. Measured results are in [FINDINGS.md](FINDINGS.md).
+```
+cli (one binary)
+  ingest ── fetch (RPC, rate limit, retry)
+         ── parse (locks + schedule + token deltas)
+         ── store (DuckDB Appender, batches of 25)
+  serve  ── axum  /  /api/health  /api/contention  /api/tokens  /api/ohlcv
+```
 
-## Contention-model assumptions
+Fetch → parse → store uses a bounded `mpsc` (capacity 2, **block** on send).
+Parse and DB work run on `spawn_blocking` unless `--cpu-inline`.
 
-- **Conflict:** a **write** lock on an account conflicts with any later
-  **read or write** on that same account. Two **reads** never conflict.
-- **Step:** the position in an order-preserving schedule. Transaction
-  `i` is assigned
-  `step = 1 + max(blocking step among earlier conflicting locks)`, or
-  `0` if nothing blocks it. Depth is `1 + max(step)` (or 0 if no txs).
-- **Heuristic, not exact.** The Solana RPC **does not expose the
-  validator’s actual execution schedule**. We reconstruct a schedule
-  that **preserves original in-block order** (a tx may only start after
-  every *earlier* conflicting tx has finished). That answers “how
-  parallel could this block realistically have run,” not a
-  graph-coloring minimum that ignores block order.
+## Contention model
 
-Implementation: `contention::build_schedule`. Tests:
-`cargo test -p contention`.
+- **Conflict:** a **write** on an account conflicts with a later **read or
+  write** on the same account. Two **reads** never conflict.
+- **Step:** `1 + max(blocking step among earlier conflicting locks)`, or `0`
+  if nothing blocks. Depth is `1 + max(step)` (0 if no txs).
+- **Heuristic.** The schedule **preserves in-block order**. It is not the
+  validator’s actual schedule and not a graph-coloring minimum.
 
-## OHLCV assumptions
+See `contention::build_schedule`. `cargo test -p contention`.
 
-- Candles at **1 minute** (`interval_sec = 60`) and **5 minutes**
-  (`300`).
-- **Transaction metadata only:** `preTokenBalances` / `postTokenBalances`
-  (and the analogous native-balance fields where present). No DEX
-  instruction decode, no extra RPC.
-- Price = opposing SPL-token vs wrapped-SOL (`So111…112`) deltas in the
-  **same** successful transaction, decimal-adjusted. Volume in SOL.
-- Excluded: wrap/unwrap only, same-direction deltas (LP-like), no wSOL
-  leg, dust &lt; `0.0005` SOL, failed txs (`meta.err`).
+## OHLCV model
 
-## Automated tests (assignment-required)
+- Intervals: **60 s** and **300 s**.
+- Inputs: transaction metadata only (`preTokenBalances` / `postTokenBalances`).
+- Price: opposing SPL mint vs wrapped-SOL (`So111…112`) in the same successful
+  tx, decimal-adjusted. Volume in SOL.
+- Dropped: wrap/unwrap-only, same-direction deltas (LP-like), no wSOL leg,
+  dust below `0.0005` SOL, failed txs (`meta.err`).
 
-| Requirement | Command |
+## Tests
+
+```powershell
+powershell -File scripts\verify.ps1
+```
+
+| Area | Command |
 |---|---|
 | Conflict detection | `cargo test -p contention` |
-| v0 / ALT account resolution | `cargo test -p ingest-core v0_account_resolution` |
-| Candle construction (1m and 5m) | `cargo test -p ohlcv candle` |
-| Idempotent ingestion | `cargo test -p storage replacing_the_same_slot_twice_does_not_duplicate_rows` |
+| v0 / ALT accounts | `cargo test -p ingest-core v0_account_resolution` |
+| 1m / 5m candles | `cargo test -p ohlcv candle` |
+| Idempotent ingest | `cargo test -p storage replacing_the_same_slot_twice_does_not_duplicate_rows` |
 | Full offline suite | `cargo test` or `scripts\verify.ps1` |
-
-Load-experiment write-up: [FINDINGS.md](FINDINGS.md). Per-FR commands:
-[HOW_TO_TEST.md](HOW_TO_TEST.md).
-
-## Architecture (short)
-
-One binary (`cli`). Fetch → parse → store over bounded `mpsc` (capacity 2,
-**block** on send). SQL only in `storage` (DuckDB Appender, delete-then-insert
-per slot). `ingest --serve` shares `Arc<Mutex<Connection>>`; `/api/health`
-does not take that lock. Rate limit is client-side, 10 req/s.

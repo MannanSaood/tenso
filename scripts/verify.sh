@@ -56,7 +56,7 @@ if [[ "$live" -eq 1 ]]; then
     --rate-per-sec 10 \
     --max-concurrency 2 \
     --batch-size 2 \
-    --db-path astralane-verify.duckdb
+    --db-path blocks-verify.duckdb
 fi
 
 echo ""

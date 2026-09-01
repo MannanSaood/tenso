@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 fn temp_db_path(name: &str) -> PathBuf {
     let mut p = std::env::temp_dir();
-    p.push(format!("astralane_test_{name}_{}.duckdb", std::process::id()));
+    p.push(format!("blocks_test_{name}_{}.duckdb", std::process::id()));
     p
 }
 

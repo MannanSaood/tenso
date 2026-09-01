@@ -30,7 +30,7 @@ use storage::Repository;
 const PIPELINE_CAPACITY: usize = 2;
 
 #[derive(Parser)]
-#[command(name = "astralane-assignment")]
+#[command(name = "block-analysis")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -42,7 +42,7 @@ enum Command {
     Ingest(IngestArgs),
     /// Serve the API + dashboard.
     Serve {
-        #[arg(long, default_value = "astralane.duckdb")]
+        #[arg(long, default_value = "blocks.duckdb")]
         db_path: String,
         #[arg(long, default_value_t = 8080)]
         port: u16,
@@ -63,7 +63,7 @@ struct IngestArgs {
     max_concurrency: usize,
     #[arg(long, default_value_t = 25)]
     batch_size: usize,
-    #[arg(long, default_value = "astralane.duckdb")]
+    #[arg(long, default_value = "blocks.duckdb")]
     db_path: String,
     /// Pause the store stage once, in seconds, so fetch/parse fill the
     /// bounded channels (FR-5.1). 0 disables the pause.
